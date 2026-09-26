@@ -1,74 +1,165 @@
+from datetime import datetime
 from rich.table import Table
 from rich import box
-from logger import read_log
+from rich.text import Text
+from config import (
+    TEMP_NORMAL_MAX,
+    TEMP_WARM_MAX,
+    TEMP_HOT_MAX,
+)
 
-BLOCKS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+
+def get_temperature_status(temp):
+    '''Return the status and color for a given temperature.'''
+
+    if temp < TEMP_NORMAL_MAX:
+        return "NORMAL", "green"
+
+    if temp < TEMP_WARM_MAX:
+        return "WARM", "yellow"
+
+    if temp < TEMP_HOT_MAX:
+        return "HOT", "dark_orange"
+
+    return "CRITICAL", "bold red"
 
 
-def smooth(temps, window=3):
-    '''Apply a simple moving average to reduce noise.'''
-    if len(temps) < 2:
-        return temps
-    result = []
-    for i in range(len(temps)):
-        start = max(0, i - window + 1)
-        chunk = temps[start:i + 1]
-        result.append(sum(chunk) / len(chunk))
-        
+def format_temperature(temp):
+    '''Return a formatted temperature string with an appropriate color.'''
+
+    status, color = get_temperature_status(temp)
+
+    temperature = Text()
+    temperature.append(f"{temp:.1f}°C", style=f"bold {color}")
+
+    return temperature
+
+
+def format_status(temp):
+    '''Return a colored temperature status indicator.'''
+
+    status, color = get_temperature_status(temp)
+
+    result = Text()
+    result.append("● ", style=color)
+    result.append(status, style=f"bold {color}")
+
     return result
 
 
-def draw_graph(dev_temps, width=30, min_range=5.0, use_smoothing=True):
-    '''Receives a list of temperatures 
-    and returns a graph string converted to block bars.'''
-    if not dev_temps:
-        return " " * width
+def create_device_table(dev_temps):
+    '''Create a table containing device temperatures and statuses.'''
 
-    temps = [temp for _, temp in dev_temps[-width:]]
+    table = Table(
+        box=box.ROUNDED,
+        border_style="bright_black",
+        expand=False,
+        padding=(0, 2),
+    )
 
-    if use_smoothing:
-        temps = smooth(temps)
+    table.add_column(
+        "DEVICE",
+        justify="left",
+        style="bold white",
+        no_wrap=True,
+    )
 
-    min_temp, max_temp = min(temps), max(temps)
+    table.add_column(
+        "TEMPERATURE",
+        justify="right",
+        no_wrap=True,
+    )
 
-    # If the range is too small, force a minimum range so that
-    # minor noise isn't exaggerated across the full graph width.
-    if max_temp - min_temp < min_range:
-        center = (max_temp + min_temp) / 2
-        min_temp = center - min_range / 2
-        max_temp = center + min_range / 2
-
-    result = ""
-    
-    for temp in temps:
-        index = round((temp - min_temp) / (max_temp - min_temp) * (len(BLOCKS) - 1))
-        index = max(0, min(len(BLOCKS) - 1, index))
-        result += BLOCKS[index]
-
-    if len(result) < width:
-        result = " " * (width - len(result)) + result
-        
-    return result
-
-
-def render(dev_temps):
-    '''Return the overall device temperature and graph in a 'Rich Table' format.'''
-    table = Table(title="Thermometer",
-                  title_justify="center",
-                  title_style="bold white",
-                  box=box.ROUNDED)
-    table.add_column("Dev_name", justify="center", no_wrap=True)
-    table.add_column("Current_temp", justify="center")
-    table.add_column("Graph", justify="center")
+    table.add_column(
+        "STATUS",
+        justify="left",
+        no_wrap=True,
+    )
 
     for device, temp in dev_temps.items():
         dev_name = device.replace(" ", "_").replace("/dev/", "")
-        try:
-            log_data = read_log(dev_name)
-        except FileNotFoundError:
-            log_data = []
 
-        graph = draw_graph(log_data)
-        table.add_row(dev_name, str(temp), graph)
-        
+        table.add_row(
+            dev_name,
+            format_temperature(temp),
+            format_status(temp),
+        )
+
     return table
+
+
+def create_summary(dev_temps):
+    '''Create a summary table containing average and maximum temperature.'''
+
+    if not dev_temps:
+        return Table()
+
+    temperatures = list(dev_temps.values())
+
+    average_temp = sum(temperatures) / len(temperatures)
+    maximum_temp = max(temperatures)
+
+    max_device = next(
+        device
+        for device, temp in dev_temps.items()
+        if temp == maximum_temp
+    )
+
+    max_device = max_device.replace(" ", "_").replace("/dev/", "")
+
+    table = Table(
+        box=box.SIMPLE,
+        show_header=False,
+        padding=(0, 2),
+        expand=False,
+    )
+
+    table.add_column(style="dim")
+    table.add_column(justify="right")
+
+    table.add_row(
+        "Average",
+        format_temperature(average_temp),
+    )
+
+    table.add_row(
+        "Maximum",
+        format_temperature(maximum_temp),
+    )
+
+    table.add_row(
+        "Max device",
+        Text(max_device, style="bold white"),
+    )
+
+    return table
+
+
+def render(dev_temps):
+    '''Return the complete temperature display as a Rich Group.'''
+
+    if not dev_temps:
+        return Text("No temperature data available.", style="yellow")
+
+    current_time = datetime.now().strftime("%H:%M:%S")
+
+    header = Text()
+    header.append("DEVICE TEMPERATURE\n", style="bold cyan")
+    header.append(
+        f"Last update: {current_time}",
+        style="dim",
+    )
+    
+    device_table = create_device_table(dev_temps)
+
+    summary = create_summary(dev_temps)
+
+    from rich.console import Group
+
+    return Group(
+        header,
+        "",
+        device_table,
+        "",
+        summary,
+    )
